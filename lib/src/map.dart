@@ -87,22 +87,58 @@ class MapPickerState extends State<MapPicker> {
     setState(() => _currentMapType = nextType);
   }
 
+  var dialogOpen;
   // this also checks for location permission.
   Future<void> _initCurrentLocation() async {
     Position currentPosition;
     try {
-      currentPosition = await getCurrentPosition();
+      currentPosition = await Geolocator()
+          .getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
+
       d("position = $currentPosition");
 
       setState(() => _currentPosition = currentPosition);
-    } catch (e) {
-      currentPosition = null;
+
+      if (dialogOpen != null) {
+        Navigator.of(context, rootNavigator: true).pop();
+        dialogOpen = null;
+      }
+    } on PlatformException catch (e) {
       d("_initCurrentLocation#e = $e");
+      currentPosition = null;
+
+      if (dialogOpen == null) {
+        d('showDialog');
+        dialogOpen = showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) {
+            return AlertDialog(
+              title: Text(S.of(context)?.access_to_location_denied ??
+                  'Access to location denied'),
+              content: Text(
+                  S.of(context)?.allow_access_to_the_location_services ??
+                      'Allow access to the location services.'),
+              actions: <Widget>[
+                FlatButton(
+                  child: Text(S.of(context)?.ok ?? 'Ok'),
+                  onPressed: () {
+                    Navigator.of(context, rootNavigator: true).pop();
+                    _initCurrentLocation();
+                    dialogOpen = null;
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      }
     }
 
     if (!mounted) return;
 
     setState(() => _currentPosition = currentPosition);
+    d("after setState() call = $currentPosition");
 
     if (currentPosition != null)
       moveToCurrentLocation(
@@ -110,7 +146,6 @@ class MapPickerState extends State<MapPicker> {
   }
 
   Future moveToCurrentLocation(LatLng currentLocation) async {
-    d('MapPickerState.moveToCurrentLocation "currentLocation = [$currentLocation]"');
     final controller = await mapController.future;
     controller.animateCamera(CameraUpdate.newCameraPosition(
       CameraPosition(target: currentLocation, zoom: 16),
@@ -120,8 +155,7 @@ class MapPickerState extends State<MapPicker> {
   @override
   void initState() {
     super.initState();
-    if (widget.automaticallyAnimateToCurrentLocation && !widget.requiredGPS)
-      _initCurrentLocation();
+    if (widget.automaticallyAnimateToCurrentLocation) _initCurrentLocation();
 
     if (widget.mapStylePath != null) {
       rootBundle.loadString(widget.mapStylePath).then((string) {
@@ -132,26 +166,21 @@ class MapPickerState extends State<MapPicker> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.requiredGPS) {
-      _checkGeolocationPermission();
-      if (_currentPosition == null) _initCurrentLocation();
+    print("map.dart -> build()");
+    if (widget.requiredGPS && _currentPosition == null) {
+      // _checkGeolocationPermission();
+      _checkGps();
     }
-
-    if (_currentPosition != null && dialogOpen != null)
-      Navigator.of(context, rootNavigator: true).pop();
-
     return Scaffold(
-      body: Builder(
-        builder: (context) {
-          if (_currentPosition == null &&
-              widget.automaticallyAnimateToCurrentLocation &&
-              widget.requiredGPS) {
-            return const Center(child: CircularProgressIndicator());
-          }
+      body: Builder(builder: (context) {
+        if (_currentPosition == null &&
+            widget.automaticallyAnimateToCurrentLocation &&
+            widget.requiredGPS) {
+          return const Center(child: CircularProgressIndicator());
+        }
 
-          return buildMap();
-        },
-      ),
+        return buildMap();
+      }),
     );
   }
 
@@ -235,9 +264,7 @@ class MapPickerState extends State<MapPicker> {
                         _address = data["address"];
                         _placeId = data["placeId"];
                         return Text(
-                          _address ??
-                              S.of(context)?.unnamedPlace ??
-                              'Unnamed place',
+                          _address ?? 'Unnamed place',
                           style: TextStyle(fontSize: 18),
                         );
                       },
@@ -317,40 +344,19 @@ class MapPickerState extends State<MapPicker> {
     );
   }
 
-  var dialogOpen;
-
+  // var dialogOpen;
   Future _checkGeolocationPermission() async {
-    final geolocationStatus = await checkPermission();
-    d("geolocationStatus = $geolocationStatus");
+    print("map.dart -> _checkGeolocationPermission()");
+    var geolocationStatus =
+        await Geolocator().checkGeolocationPermissionStatus();
 
-    if (geolocationStatus == LocationPermission.denied && dialogOpen == null) {
-      dialogOpen = _showDeniedDialog();
-    } else if (geolocationStatus == LocationPermission.deniedForever &&
-        dialogOpen == null) {
-      dialogOpen = _showDeniedForeverDialog();
-    } else if (geolocationStatus == LocationPermission.whileInUse ||
-        geolocationStatus == LocationPermission.always) {
-      d('GeolocationStatus.granted');
-
-      if (dialogOpen != null) {
-        Navigator.of(context, rootNavigator: true).pop();
-        dialogOpen = null;
-      }
-    }
-  }
-
-  Future _showDeniedDialog() {
-    return showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return WillPopScope(
-          onWillPop: () async {
-            Navigator.of(context, rootNavigator: true).pop();
-            Navigator.of(context, rootNavigator: true).pop();
-            return true;
-          },
-          child: AlertDialog(
+    if (geolocationStatus == GeolocationStatus.denied && dialogOpen == null) {
+      d('showDialog');
+      dialogOpen = showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) {
+          return AlertDialog(
             title: Text(S.of(context)?.access_to_location_denied ??
                 'Access to location denied'),
             content: Text(
@@ -366,51 +372,28 @@ class MapPickerState extends State<MapPicker> {
                 },
               ),
             ],
-          ),
-        );
-      },
-    );
+          );
+        },
+      );
+    } else if (geolocationStatus == GeolocationStatus.disabled) {
+      // FIXME: handle this case
+    } else if (geolocationStatus == GeolocationStatus.granted) {
+      d('GeolocationStatus.granted');
+      if (dialogOpen != null) {
+        Navigator.of(context, rootNavigator: true).pop();
+        dialogOpen = null;
+      }
+      // _checkGps();
+    }
   }
 
-  Future _showDeniedForeverDialog() {
-    return showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return WillPopScope(
-          onWillPop: () async {
-            Navigator.of(context, rootNavigator: true).pop();
-            Navigator.of(context, rootNavigator: true).pop();
-            return true;
-          },
-          child: AlertDialog(
-            title: Text(S.of(context)?.access_to_location_permanently_denied ??
-                'Access to location permanently denied'),
-            content: Text(S
-                    .of(context)
-                    ?.allow_access_to_the_location_services_from_settings ??
-                'Allow access to the location services for this App using the device settings.'),
-            actions: <Widget>[
-              FlatButton(
-                child: Text(S.of(context)?.ok ?? 'Ok'),
-                onPressed: () {
-                  Navigator.of(context, rootNavigator: true).pop();
-                  openAppSettings();
-                  dialogOpen = null;
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  // TODO: 9/12/2020 this is no longer needed, remove in the next release
+  var gpsDeniedDialogOpen = null;
   Future _checkGps() async {
-    if (!(await isLocationServiceEnabled())) {
-      if (Theme.of(context).platform == TargetPlatform.android) {
-        showDialog(
+    if (!(await Geolocator().isLocationServiceEnabled())) {
+      d("location not enabled");
+      if (Theme.of(context).platform == TargetPlatform.android &&
+          gpsDeniedDialogOpen == null) {
+        gpsDeniedDialogOpen = showDialog(
           context: context,
           barrierDismissible: false,
           builder: (BuildContext context) {
@@ -436,6 +419,12 @@ class MapPickerState extends State<MapPicker> {
             );
           },
         );
+      }
+    } else {
+      d("location enabled");
+      if (gpsDeniedDialogOpen != null) {
+        Navigator.of(context, rootNavigator: true).pop();
+        gpsDeniedDialogOpen = null;
       }
     }
   }
